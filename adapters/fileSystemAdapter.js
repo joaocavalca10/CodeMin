@@ -31,6 +31,8 @@ function extToType(filename) {
       return 'image';
     case '.pptx':
       return 'pptx';
+    case '.blend':
+      return "blend";
     default:
       const m = mime.lookup(ext);
       if (m && m.startsWith('text')) return 'txt';

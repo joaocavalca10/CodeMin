@@ -68,7 +68,7 @@ export const fileTypeStyles = [
     selector: 'node[type = "js"]',
     style: {
       'background-color': '#cfe2ff',        // Azul claro
-      'border-color': '#084298',
+      'border-color': '#67dbdb',
       'color': '#084298'
     }
   },
@@ -80,7 +80,7 @@ export const fileTypeStyles = [
     selector: 'node[type = "pdf"]',
     style: {
       'background-color': '#f8d7da',        // Vermelho claro
-      'border-color': '#842029',
+      'border-color': '#67dbdb',
       'color': '#842029'
     }
   },
@@ -89,10 +89,21 @@ export const fileTypeStyles = [
     selector: 'node[type = "pptx"]',
     style: {
       'background-color': '#1c1c1c',
-      'border-color': '#67db',
-      'color': '#fff'
+      'border-color': '#67dbdb',
+      'color': '#fff',
+      'letter-spacing': '10px'
     }
-  }
+  },
+
+  {
+    selector: 'node[type = "blend"]',
+    style: {
+      'background-color': '#1c1c1c',
+      'border-color': '#67dbdb',
+      'color': '#fff',
+      'letter-spacing': '10px'
+    }
+  },
 
   // ============================================================
   // COMO ADICIONAR NOVOS TIPOS:
