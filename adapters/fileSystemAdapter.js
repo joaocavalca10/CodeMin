@@ -13,9 +13,24 @@ function toRel(base, full) {
 
 function extToType(filename) {
   const ext = path.extname(filename).toLowerCase();
-  if (!ext) return 'txt';
 
   switch (ext) {
+    case '.html':
+    case '.htm':
+      return 'html';
+    case '.js':
+      return 'js';
+    case '.css':
+      return 'css';
+    case '.json':
+      return 'json';
+    case '.png':
+    case '.jpg':
+    case '.jpeg':
+    case '.gif':
+      return 'image';
+    case '.pptx':
+      return 'pptx';
     default:
       const m = mime.lookup(ext);
       if (m && m.startsWith('text')) return 'txt';

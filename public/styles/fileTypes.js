@@ -83,6 +83,15 @@ export const fileTypeStyles = [
       'border-color': '#842029',
       'color': '#842029'
     }
+  },
+
+  {
+    selector: 'node[type = "pptx"]',
+    style: {
+      'background-color': '#1c1c1c',
+      'border-color': '#67db',
+      'color': '#fff'
+    }
   }
 
   // ============================================================
