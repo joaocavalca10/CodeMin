@@ -201,4 +201,4 @@ Agora o frontend pode chamar a API com o parâmetro sourceType, por exemplo:
   identificadores consistentes para que o frontend possa fazer buscas.
 
 --------------------------------------------------------------------------------
-FIM DO GUIA
+FIM DO GUIA :)
