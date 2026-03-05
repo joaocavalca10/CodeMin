@@ -86,10 +86,12 @@ import { cytoscapeStyles } from './styles/index.js';
       // Validar IDs
       data.nodes = data.nodes.filter(n => n.id && n.id.trim() !== '');
 
-      // Adicionar nós com dados estendidos (path para tooltip)
+      // === ALTERAÇÃO AQUI ===
+      // Não sobrescrever o campo 'path' original do nó.
+      // Usar os dados exatamente como enviados pelo backend.
       cy.add(data.nodes.map(n => ({
         group: 'nodes',
-        data: { ...n, path: folder + '/' + n.label }
+        data: { ...n }   // Mantém o path original (relativo)
       })));
 
       // Adicionar arestas válidas

@@ -1,42 +1,55 @@
-// server.js (versão reforçada)
+// server.js
 const express = require('express');
 const path = require('path');
 const fs = require('fs').promises;
 const { fromFileSystem } = require('./adapters/fileSystemAdapter');
+const { fromGitHub } = require('./adapters/githubAdapter'); // <-- importe o adaptador GitHub
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(express.static(path.join(__dirname, 'public')));
 
+// Rota única /api/graph
 app.get('/api/graph', async (req, res) => {
+  const inputPath = String(req.query.path || '').trim();
+  if (!inputPath) {
+    return res.status(400).json({ error: 'Parâmetro "path" é obrigatório' });
+  }
+
   try {
-    const folder = String(req.query.path || '').trim();
-    if (!folder) return res.status(400).json({ error: 'path query required' });
+    let graphData;
 
-    // normalize: se já for absoluto, resolve; se relativo, resolve a partir do cwd
-    const base = path.isAbsolute(folder) ? path.resolve(folder) : path.resolve(process.cwd(), folder);
+    // 1. Verifica se é uma URL do GitHub
+    if (inputPath.includes('github.com')) {
+      console.log('[api/graph] GitHub URL detectada:', inputPath);
+      graphData = await fromGitHub(inputPath);
+    } else {
+      // 2. Caso contrário, trata como caminho local
+      console.log('[api/graph] Caminho local:', inputPath);
 
-    console.log('[api/graph] requested path (raw):', req.query.path);
-    console.log('[api/graph] resolved base:', base);
+      // Resolve o caminho absoluto
+      const base = path.isAbsolute(inputPath)
+        ? path.resolve(inputPath)
+        : path.resolve(process.cwd(), inputPath);
 
-    // checar existência e se é diretório
-    try {
-      const stat = await fs.stat(base);
-      if (!stat.isDirectory()) {
-        return res.status(400).json({ error: 'O caminho informado não é uma pasta.' });
+      // Verifica se existe e é diretório
+      try {
+        const stat = await fs.stat(base);
+        if (!stat.isDirectory()) {
+          return res.status(400).json({ error: 'O caminho informado não é uma pasta.' });
+        }
+      } catch (err) {
+        return res.status(400).json({ error: 'Pasta não encontrada: ' + base });
       }
-    } catch (err) {
-      return res.status(400).json({ error: 'Pasta não encontrada: ' + base });
+
+      graphData = await fromFileSystem(base);
     }
 
-    // chama o adapter (assume que adapter espera base absoluto)
-    const graph = await fromFileSystem(base);
-    return res.json(graph);
-
+    res.json(graphData);
   } catch (err) {
-    console.error('[api/graph] analyze error', err);
-    return res.status(500).json({ error: String(err.message || err) });
+    console.error('[api/graph] Erro:', err);
+    res.status(500).json({ error: err.message });
   }
 });
 
