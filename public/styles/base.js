@@ -12,7 +12,7 @@ export const baseStyles = [
   {
     selector: 'node',
     style: {
-      shape: 'round-rectangle',          // Forma do nó (pode ser 'ellipse', 'rectangle', etc.)
+      shape: 'rectangle',          // Forma do nó (pode ser 'ellipse', 'rectangle', etc.)
       width: 'label',                     // Largura automática baseada no texto
       height: 'label',                    // Altura automática baseada no texto
       padding: '10px',                     // Espaço interno entre texto e borda
@@ -72,12 +72,12 @@ export const baseStyles = [
   // ------------------------------------------------------------
   // CLASSE PARA ESCONDER NÓS (USADA NA BUSCA)
   // ------------------------------------------------------------
-  {
-    selector: '.hidden',
-    style: {
-      'visibility': 'hidden'                 // Torna o nó invisível (mas ele ainda ocupa espaço no layout)
-    }
-  },
+    {
+      selector: '.hidden',
+      style: {
+        display: 'none'
+      }
+    },
 
   // ------------------------------------------------------------
   // ESTILO PADRÃO DAS ARESTAS
@@ -116,4 +116,7 @@ export const baseStyles = [
   }
   // Você pode adicionar mais seletores de aresta aqui, por exemplo:
   // { selector: 'edge[relation = "import"]', style: { ... } }
+
+
+
 ];

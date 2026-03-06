@@ -1,4 +1,5 @@
 import { cytoscapeStyles } from './styles/index.js';
+cytoscape.use(cytoscapeDagre);
 
 // public/renderer.js
 (async function () {
@@ -23,6 +24,50 @@ import { cytoscapeStyles } from './styles/index.js';
     elements: [],
     style: cytoscapeStyles,  // <-- USANDO OS ESTILOS IMPORTADOS
     layout: { name: 'preset' }
+  });
+  function getChildren(node) {
+  return node.outgoers('node');
+}
+
+function toggleCollapse(node) {
+  const collapsed = node.data('collapsed');
+  const children = getChildren(node);
+
+  if (!children.length) return;
+
+  cy.batch(() => {
+
+    children.forEach(child => {
+
+      if (collapsed) {
+        child.removeClass('hidden');
+        child.connectedEdges().removeClass('hidden');
+      } else {
+        child.addClass('hidden');
+        child.connectedEdges().addClass('hidden');
+      }
+
+    });
+
+    node.data('collapsed', !collapsed);
+
+  });
+}
+  // === Zoom automático ao clicar em um nó ===
+  cy.on('tap', 'node', function(evt) {
+    const node = evt.target;
+
+    cy.animate({
+      center: { eles: node },
+      zoom: 2
+    }, {
+      duration: 400
+    });
+  });
+
+  cy.on('dbltap', 'node', function(evt) {
+    const node = evt.target;
+    toggleCollapse(node);
   });
 
   // === Tooltip customizado (caminho completo) ===
@@ -51,9 +96,11 @@ import { cytoscapeStyles } from './styles/index.js';
   // === Busca em tempo real (filtra nós pelo nome) ===
   searchInput.addEventListener('input', (e) => {
     const query = e.target.value.toLowerCase();
+
     cy.batch(() => {
       cy.nodes().forEach(node => {
         const label = node.data('label').toLowerCase();
+
         if (label.includes(query)) {
           node.removeClass('hidden');
         } else {
@@ -61,6 +108,21 @@ import { cytoscapeStyles } from './styles/index.js';
         }
       });
     });
+
+    const results = cy.nodes().filter(node =>
+      node.data('label').toLowerCase().includes(query)
+    );
+
+    if (results.length > 0) {
+      cy.animate({
+        fit: {
+          eles: results,
+          padding: 80
+        }
+      }, {
+        duration: 500
+      });
+    }
   });
 
   // === Carregar grafo a partir da API ===
@@ -91,7 +153,10 @@ import { cytoscapeStyles } from './styles/index.js';
       // Usar os dados exatamente como enviados pelo backend.
       cy.add(data.nodes.map(n => ({
         group: 'nodes',
-        data: { ...n }   // Mantém o path original (relativo)
+        data: {
+          ...n,
+          collapsed: false
+        }
       })));
 
       // Adicionar arestas válidas
@@ -106,24 +171,29 @@ import { cytoscapeStyles } from './styles/index.js';
 
       // === LAYOUT FORCE-DIRECTED (COSE) ===
       const layout = cy.layout({
-        name: 'cose',
-        idealEdgeLength: 70,
-        nodeRepulsion: 300000,
-        gravity: 0.7,
-        padding: 20,
-        fit: true,
-        randomize: false,
-        animate: true,
-        animationDuration: 500,
-        componentSpacing: 80,
-        edgeElasticity: 100,
-        nestingFactor: 5,
-        numIter: 1000,
-        initialTemp: 200,
-        coolingFactor: 0.95,
-        minTemp: 1.0
+        name: "dagre",
+        rankDir: "LR",
+        nodeSep: 40,
+        rankSep: 200,
+        spacingFactor: 1.3,
+        animate: false,
+        fit: false,
+        padding: 30
       });
+
       layout.run();
+      cy.ready(() => {
+      const root = cy.nodes()[0]; // ou use um filtro específico
+
+      if (root) {
+        cy.animate({
+          center: { eles: root },
+          zoom: 1.5
+        }, {
+          duration: 600
+        });
+      }
+    });
 
       cy.fit(20);
       jsonView.textContent = JSON.stringify(data, null, 2);
