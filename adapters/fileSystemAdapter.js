@@ -82,6 +82,34 @@ async function fromFileSystem(baseDir) {
   const edges = [];
   const q = [baseDir];
   const baseAbs = path.resolve(baseDir);
+  // load .gitignore patterns (simple matching)
+  let gitignorePatterns = [];
+  try {
+    const gitignorePath = path.join(baseAbs, '.gitignore');
+    const raw = await fs.readFile(gitignorePath, 'utf8');
+    gitignorePatterns = raw
+      .split(/\r?\n/)
+      .map(l => l.trim())
+      .filter(l => l && !l.startsWith('#'))
+      .map(p => {
+        if (p.endsWith('/')) p = p.slice(0, -1);
+        if (p.startsWith('/')) p = p.slice(1);
+        return p;
+      });
+  } catch {
+    gitignorePatterns = [];
+  }
+
+  function matchesGitignore(rel) {
+    if (!rel || rel === '__root__') return false;
+    for (const p of gitignorePatterns) {
+      if (!p) continue;
+      if (rel === p) return true;
+      if (rel.startsWith(p + '/')) return true;
+      if (rel.split('/').includes(p)) return true;
+    }
+    return false;
+  }
 
   async function addFileNode(full) {
     const stat = await fs.stat(full);
@@ -89,6 +117,11 @@ async function fromFileSystem(baseDir) {
     let rel = toRel(baseAbs, full);
     if (!rel || rel.trim() === '') {
       rel = '__root__';
+    }
+
+    // ignora node_modules, .git e arquivos/pastas do .gitignore, mas só para subníveis (não ignora a raiz mesmo se tiver node_modules ou .git)
+    if (rel !== '__root__' && (rel.split('/').includes('node_modules') || rel.split('/').includes('.git') || matchesGitignore(rel))) {
+      return null;
     }
 
     if (!nodesMap.has(rel)) {
@@ -139,12 +172,14 @@ async function fromFileSystem(baseDir) {
       const full = path.join(current, dirent.name);
 
       if (dirent.isDirectory()) {
-        q.push(full);
-        const childRel = await addFileNode(full);
-        edges.push(makeEdge(relDir, childRel, 'contains'));
-      } else {
-        const childRel = await addFileNode(full);
-        edges.push(makeEdge(relDir, childRel, 'contains'));
+        // não entra em node_modules ou .git, mas adiciona o node e a aresta
+        if (dirent.name === 'node_modules' || dirent.name === '.git') continue;
+          q.push(full);
+          const childRel = await addFileNode(full);
+          if (childRel) edges.push(makeEdge(relDir, childRel, 'contains'));
+        } else {
+          const childRel = await addFileNode(full);
+          if (childRel) edges.push(makeEdge(relDir, childRel, 'contains'));
 
         if (/\.(html?|htm)$/i.test(dirent.name)) {
           const resources = await readHtmlResources(full);
@@ -186,7 +221,7 @@ async function fromFileSystem(baseDir) {
 
     else if (r?.candidate && await fileExists(r.candidate)) {
       const targetRel = await addFileNode(r.candidate);
-      edges.push(makeEdge(sourceRel, targetRel, relation));
+      if (targetRel) edges.push(makeEdge(sourceRel, targetRel, relation));
     }
   }
 

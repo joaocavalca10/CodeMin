@@ -4,6 +4,7 @@ const path = require('path');
 const fs = require('fs').promises;
 const { fromFileSystem } = require('./adapters/fileSystemAdapter');
 const { fromGitHub } = require('./adapters/githubAdapter'); // <-- importe o adaptador GitHub
+const { fromMySql } = require('./adapters/MySqlAdapter');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -49,6 +50,32 @@ app.get('/api/graph', async (req, res) => {
     res.json(graphData);
   } catch (err) {
     console.error('[api/graph] Erro:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Exemplo: obter dados de uma tabela MySQL ou executar uma query
+// GET /api/mysql?database=mydb&table=users&limit=100
+app.get('/api/mysql', async (req, res) => {
+  try {
+    const params = {
+      host: req.query.host,
+      user: req.query.user,
+      password: req.query.password,
+      database: req.query.database,
+      port: req.query.port ? Number(req.query.port) : undefined,
+      query: req.query.query,
+      table: req.query.table,
+      idField: req.query.idField,
+      limit: req.query.limit ? Number(req.query.limit) : undefined
+    };
+
+    if (!params.database) return res.status(400).json({ error: '`database` is required' });
+
+    const graphData = await fromMySql(params);
+    res.json(graphData);
+  } catch (err) {
+    console.error('[api/mysql] Erro:', err);
     res.status(500).json({ error: err.message });
   }
 });

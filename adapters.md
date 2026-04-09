@@ -1,3 +1,205 @@
+# Guia para Criação de Novos Adapters no Sistema de Grafo
+
+Este documento explica o conceito de adapters, sua estrutura, como implementá-los, integrá-los à API e as melhores práticas.
+
+## Índice
+
+1. [O que é um adapter?](#o-que-é-um-adapter)
+2. [Estrutura de dados esperada](#estrutura-de-dados-esperada)
+    - [Nós (nodes)](#nós-nodes)
+    - [Arestas (edges)](#arestas-edges)
+3. [Passo a passo para criar um novo adapter](#passo-a-passo-para-criar-um-novo-adapter)
+4. [Exemplo prático: adapter para banco de dados SQL](#exemplo-prático-adapter-para-banco-de-dados-sql)
+5. [Integração com a API](#integração-com-a-api)
+6. [Boas práticas e dicas](#boas-práticas-e-dicas)
+
+---
+
+## O que é um adapter?
+
+Um adapter é um módulo responsável por extrair dados de uma fonte (sistema de arquivos, banco de dados, API externa, etc.) e transformá-los em nós e arestas que o Cytoscape pode renderizar. Cada adapter deve exportar uma função que retorna uma Promise com a estrutura padronizada.
+
+---
+
+## Estrutura de dados esperada
+
+A função do adapter deve retornar um objeto no formato:
+
+```json
+{
+     "nodes": [],
+     "edges": []
+}
+```
+
+### Nós (nodes)
+
+Cada nó deve conter no mínimo os campos `id` e `label`. Campos adicionais são opcionais, mas podem ser usados para estilização ou informações extras.
+
+**Campos obrigatórios:**
+- `id` (string): identificador único do nó
+- `label` (string): texto exibido no nó
+
+**Campos comuns (usados no estilo):**
+- `type` (string): define a cor/ícone do nó. Valores suportados: `folder`, `html`, `css`, `js`, `pdf`, `docx`, `xlsx`, `pptx`, `external`. Se não especificado, assume um estilo padrão.
+- `path` (string): caminho completo ou referência (usado em tooltips)
+- `size` (number): tamanho do arquivo (opcional)
+- `mtime` (number): timestamp da última modificação (opcional)
+
+> **Dica:** Use a função `normalizeNode` do módulo `../core/schema` para garantir que os campos essenciais estejam presentes e normalizados.
+
+### Arestas (edges)
+
+Cada aresta deve conter:
+- `source` (string): ID do nó de origem
+- `target` (string): ID do nó de destino
+- `relation` (string): tipo de relação. Valores suportados: `contains` (hierarquia), `script`, `style`, `link`. Outros valores podem ser adicionados, mas precisam de estilo correspondente no frontend.
+
+> **Dica:** Use a função `makeEdge` do módulo `../core/schema` para criar arestas padronizadas.
+
+---
+
+## Passo a passo para criar um novo adapter
+
+1. Crie um novo arquivo na pasta `adapters/`, por exemplo `meuAdapter.js`
+2. Importe as funções auxiliares do schema:
+    ```javascript
+    const { normalizeNode, makeEdge } = require('../core/schema');
+    ```
+3. Implemente a função principal que recebe os parâmetros necessários (ex: caminho, URL, credenciais) e retorna os dados
+4. Dentro da função:
+    - Use um `Map` para armazenar nós únicos (evita duplicatas)
+    - Para cada entidade encontrada, crie um nó com `normalizeNode` e adicione ao Map
+    - Para cada relação, crie uma aresta com `makeEdge` e adicione ao array edges
+    - Ao final, retorne `{ nodes: Array.from(nodesMap.values()), edges }`
+5. Exporte a função: `module.exports = { fromMinhaFonte };`
+
+---
+
+## Exemplo prático: adapter para banco de dados SQL
+
+Suponha que queremos gerar um grafo de tabelas, colunas e chaves estrangeiras.
+
+```javascript
+// adapters/databaseAdapter.js
+const { normalizeNode, makeEdge } = require('../core/schema');
+const db = require('./conexao'); // seu módulo de conexão
+
+async function fromDatabase(connectionString) {
+     const nodesMap = new Map();
+     const edges = [];
+
+     // Conecta ao banco
+     const client = await db.connect(connectionString);
+     try {
+          // Consulta tabelas
+          const tables = await client.query(`
+                SELECT table_name
+                FROM information_schema.tables
+                WHERE table_schema = 'public'
+          `);
+
+          for (const table of tables.rows) {
+                const tableId = `table:${table.table_name}`;
+                nodesMap.set(tableId, normalizeNode({
+                     id: tableId,
+                     label: table.table_name,
+                     type: 'folder'
+                }));
+
+                // Consulta colunas da tabela
+                const columns = await client.query(`
+                     SELECT column_name
+                     FROM information_schema.columns
+                     WHERE table_name = $1
+                `, [table.table_name]);
+
+                for (const col of columns.rows) {
+                     const colId = `column:${table.table_name}.${col.column_name}`;
+                     nodesMap.set(colId, normalizeNode({
+                          id: colId,
+                          label: col.column_name,
+                          type: 'txt'
+                     }));
+                     edges.push(makeEdge(tableId, colId, 'contains'));
+                }
+
+                // Consulta chaves estrangeiras
+                const fks = await client.query(`
+                     SELECT
+                          kcu.column_name,
+                          ccu.table_name AS foreign_table_name
+                     FROM information_schema.key_column_usage kcu
+                     JOIN information_schema.constraint_column_usage ccu
+                          ON kcu.constraint_name = ccu.constraint_name
+                     WHERE kcu.table_name = $1
+                `, [table.table_name]);
+
+                for (const fk of fks.rows) {
+                     const targetId = `table:${fk.foreign_table_name}`;
+                     if (nodesMap.has(targetId)) {
+                          edges.push(makeEdge(tableId, targetId, 'link'));
+                     }
+                }
+          }
+     } finally {
+          await client.close();
+     }
+
+     return {
+          nodes: Array.from(nodesMap.values()),
+          edges
+     };
+}
+
+module.exports = { fromDatabase };
+```
+
+---
+
+## Integração com a API
+
+Atualmente o endpoint `/api/graph` chama o adapter do sistema de arquivos. Para suportar múltiplas fontes, você pode modificar a rota para aceitar um parâmetro indicando o tipo de fonte:
+
+```javascript
+// server.js ou arquivo de rotas
+app.get('/api/graph', async (req, res) => {
+     const { path, sourceType = 'filesystem' } = req.query;
+     try {
+          let result;
+          if (sourceType === 'filesystem') {
+                result = await require('./adapters/fileSystemAdapter').fromFileSystem(path);
+          } else if (sourceType === 'database') {
+                result = await require('./adapters/databaseAdapter').fromDatabase(path);
+          } else {
+                return res.status(400).json({ error: 'Tipo de fonte inválido' });
+          }
+          res.json(result);
+     } catch (err) {
+          res.status(500).json({ error: err.message });
+     }
+});
+```
+
+Agora o frontend pode chamar a API com o parâmetro `sourceType`:
+```
+fetch('/api/graph?path=minha_conexao&sourceType=database')
+```
+
+---
+
+## Boas práticas e dicas
+
+- **Valide os dados:** IDs não podem ser vazios. Arestas devem referenciar nós existentes (use `nodesMap.has()` para filtrar)
+- **Use Map para evitar duplicatas:** muitas fontes podem gerar o mesmo nó várias vezes
+- **Trate erros:** use try/catch na função principal e retorne erros significativos
+- **Documente os tipos de relação** que seu adapter utiliza. Se criar novos valores para `relation`, atualize o estilo no frontend
+- **Considere performance:** se a fonte tiver muitos dados, implemente paginação ou carregamento assíncrono
+- **Use caminhos relativos:** nos IDs, prefira usar caminhos relativos ou identificadores consistentes para que o frontend possa fazer buscas
+
+---
+
+**FIM DO GUIA** 🎉
 GUIA PARA CRIAÇÃO DE NOVOS ADAPTERS NO SISTEMA DE GRAFO
 ================================================================================
 

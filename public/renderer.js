@@ -9,6 +9,7 @@ cytoscape.use(cytoscapeDagre);
   const pathInput = document.getElementById('pathInput');
   const btnLoad = document.getElementById('btnLoad');
   const btnExport = document.getElementById('btnExport');
+  const btnDb = document.getElementById('btnDb');
   const infoPanel = document.getElementById('infoPanel') || criarPainelInfo();
   const searchInput = document.getElementById('searchInput') || criarBarraBusca();
   const loadingSpinner = document.getElementById('loadingSpinner') || criarSpinner();
@@ -94,14 +95,24 @@ function toggleCollapse(node) {
   });
 
   // === Busca em tempo real (filtra nós pelo nome) ===
-  searchInput.addEventListener('input', (e) => {
-    const query = e.target.value.toLowerCase();
+  // Otimizada: usa índice de labels e debounce para evitar iterações desnecessárias
+
+  // índice de labels atualizado a cada render
+  let labelIndex = new Map();
+
+  function debounce(fn, wait) {
+    let t;
+    return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), wait); };
+  }
+
+  const doSearch = (value) => {
+    const query = String(value || '').toLowerCase();
 
     cy.batch(() => {
       cy.nodes().forEach(node => {
-        const label = node.data('label').toLowerCase();
-
-        if (label.includes(query)) {
+        const id = String(node.id());
+        const label = labelIndex.get(id) || String(node.data('label') || '').toLowerCase();
+        if (!query || label.includes(query)) {
           node.removeClass('hidden');
         } else {
           node.addClass('hidden');
@@ -109,21 +120,61 @@ function toggleCollapse(node) {
       });
     });
 
-    const results = cy.nodes().filter(node =>
-      node.data('label').toLowerCase().includes(query)
-    );
+    const results = cy.nodes().filter(node => {
+      const id = String(node.id());
+      const label = labelIndex.get(id) || String(node.data('label') || '').toLowerCase();
+      return query && label.includes(query);
+    });
 
     if (results.length > 0) {
-      cy.animate({
-        fit: {
-          eles: results,
-          padding: 80
-        }
-      }, {
-        duration: 500
-      });
+      cy.animate({ fit: { eles: results, padding: 80 } }, { duration: 500 });
     }
-  });
+  };
+
+  searchInput.addEventListener('input', debounce((e) => doSearch(e.target.value), 220));
+
+  // === Renderiza dados recebidos pelo backend no Cytoscape ===
+  function renderGraph(data) {
+    if (!data || !Array.isArray(data.nodes)) return;
+
+    mostrarSpinner(true);
+    try {
+      cy.batch(() => {
+        cy.elements().remove();
+
+        // Filtrar nós com id válido
+        data.nodes = data.nodes.filter(n => n && n.id && String(n.id).trim() !== '');
+
+        // Adicionar nós
+        cy.add(data.nodes.map(n => ({ group: 'nodes', data: { ...n, collapsed: false } })));
+
+        // Construir índice de labels para busca
+        labelIndex = new Map();
+        data.nodes.forEach(n => {
+          const lbl = (n.label || n.id || '').toString().toLowerCase();
+          labelIndex.set(String(n.id), lbl);
+        });
+
+        // Adicionar arestas válidas
+        const nodeIds = new Set(data.nodes.map(n => String(n.id)));
+        cy.add((data.edges || []).filter(e => e && nodeIds.has(String(e.source)) && nodeIds.has(String(e.target))).map(e => ({ group: 'edges', data: { source: String(e.source), target: String(e.target), relation: e.relation } })));
+      });
+
+      // Layout
+      const layout = cy.layout({ name: 'dagre', rankDir: 'LR', nodeSep: 40, rankSep: 200, spacingFactor: 1.3, animate: false, fit: false, padding: 30 });
+      layout.run();
+
+      cy.ready(() => {
+        const root = cy.nodes()[0];
+        if (root) cy.animate({ center: { eles: root }, zoom: 1.5 }, { duration: 600 });
+      });
+
+      cy.fit(20);
+      jsonView.textContent = JSON.stringify(data, null, 2);
+    } finally {
+      mostrarSpinner(false);
+    }
+  }
 
   // === Carregar grafo a partir da API ===
   async function loadGraph() {
@@ -141,62 +192,7 @@ function toggleCollapse(node) {
       }
 
       const data = await res.json();
-
-      // Limpar grafo
-      cy.elements().remove();
-
-      // Validar IDs
-      data.nodes = data.nodes.filter(n => n.id && n.id.trim() !== '');
-
-      // === ALTERAÇÃO AQUI ===
-      // Não sobrescrever o campo 'path' original do nó.
-      // Usar os dados exatamente como enviados pelo backend.
-      cy.add(data.nodes.map(n => ({
-        group: 'nodes',
-        data: {
-          ...n,
-          collapsed: false
-        }
-      })));
-
-      // Adicionar arestas válidas
-      const nodeIds = new Set(data.nodes.map(n => n.id));
-      cy.add(data.edges
-        .filter(e => nodeIds.has(e.source) && nodeIds.has(e.target))
-        .map(e => ({
-          group: 'edges',
-          data: { source: e.source, target: e.target, relation: e.relation }
-        }))
-      );
-
-      // === LAYOUT FORCE-DIRECTED (COSE) ===
-      const layout = cy.layout({
-        name: "dagre",
-        rankDir: "LR",
-        nodeSep: 40,
-        rankSep: 200,
-        spacingFactor: 1.3,
-        animate: false,
-        fit: false,
-        padding: 30
-      });
-
-      layout.run();
-      cy.ready(() => {
-      const root = cy.nodes()[0]; // ou use um filtro específico
-
-      if (root) {
-        cy.animate({
-          center: { eles: root },
-          zoom: 1.5
-        }, {
-          duration: 600
-        });
-      }
-    });
-
-      cy.fit(20);
-      jsonView.textContent = JSON.stringify(data, null, 2);
+      renderGraph(data);
     } catch (err) {
       console.error(err);
       alert('Erro ao carregar grafo: ' + err.message);
@@ -224,6 +220,77 @@ function toggleCollapse(node) {
   pathInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') loadGraph();
   });
+
+  // === Painel simples para conectar ao MySQL e carregar tabela/query ===
+  function criarPainelDb() {
+    const panel = document.createElement('div');
+    panel.style.position = 'absolute';
+    panel.style.top = '12px';
+    panel.style.left = '12px';
+    panel.style.zIndex = 2500;
+    panel.style.background = 'rgba(10,10,10,0.95)';
+    panel.style.color = '#fff';
+    panel.style.padding = '12px';
+    panel.style.borderRadius = '8px';
+    panel.style.boxShadow = '0 6px 30px rgba(0,0,0,0.6)';
+    panel.style.minWidth = '320px';
+
+    panel.innerHTML = `
+      <div style="display:flex;flex-direction:column;gap:8px">
+        <input placeholder="database (required)" id="db_database" />
+        <input placeholder="table (optional)" id="db_table" />
+        <input placeholder="idField (optional)" id="db_idField" />
+        <input placeholder="host (default localhost)" id="db_host" />
+        <input placeholder="user" id="db_user" />
+        <input placeholder="password" id="db_password" type="password" />
+        <div style="display:flex;gap:8px;justify-content:flex-end">
+          <button id="db_cancel">Cancelar</button>
+          <button id="db_load">Carregar</button>
+        </div>
+      </div>
+    `;
+
+    panel.querySelectorAll('input').forEach(i => { i.style.padding = '8px'; i.style.borderRadius = '6px'; i.style.border = '1px solid #333'; i.style.background = '#111'; i.style.color = '#fff'; });
+    panel.querySelectorAll('button').forEach(b => { b.style.padding = '8px 10px'; b.style.borderRadius = '6px'; b.style.border = 'none'; b.style.cursor = 'pointer'; });
+
+    document.body.appendChild(panel);
+
+    panel.querySelector('#db_cancel').addEventListener('click', () => panel.remove());
+    panel.querySelector('#db_load').addEventListener('click', async () => {
+      const params = {
+        database: panel.querySelector('#db_database').value.trim(),
+        table: panel.querySelector('#db_table').value.trim() || undefined,
+        idField: panel.querySelector('#db_idField').value.trim() || undefined,
+        host: panel.querySelector('#db_host').value.trim() || undefined,
+        user: panel.querySelector('#db_user').value.trim() || undefined,
+        password: panel.querySelector('#db_password').value || undefined,
+      };
+
+      if (!params.database) return alert('Informe o nome do database');
+
+      panel.querySelector('#db_load').disabled = true;
+      try {
+        const q = new URLSearchParams();
+        Object.keys(params).forEach(k => { if (params[k]) q.set(k, params[k]); });
+        const res = await fetch('/api/mysql?' + q.toString());
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({ error: res.statusText }));
+          throw new Error(err.error || res.statusText);
+        }
+
+        const data = await res.json();
+        renderGraph(data);
+        panel.remove();
+      } catch (err) {
+        console.error(err);
+        alert('Erro MySQL: ' + err.message);
+      } finally {
+        panel.querySelector('#db_load').disabled = false;
+      }
+    });
+  }
+
+  if (btnDb) btnDb.addEventListener('click', criarPainelDb);
 
   // === Funções auxiliares ===
   function criarPainelInfo() {
