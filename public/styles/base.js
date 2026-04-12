@@ -79,6 +79,19 @@ export const baseStyles = [
       }
     },
 
+    // ------------------------------------------------------------
+    // MODO COMPACTO - reduz tamanho e espaçamento dos nós
+    // ------------------------------------------------------------
+    {
+      selector: 'node.compact',
+      style: {
+        'font-size': 10,
+        padding: '4px',
+        'text-max-width': 90,
+        'background-opacity': 0.95
+      }
+    },
+
   // ------------------------------------------------------------
   // ESTILO PADRÃO DAS ARESTAS
   // ------------------------------------------------------------

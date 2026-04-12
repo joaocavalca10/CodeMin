@@ -24,7 +24,57 @@ cytoscape.use(cytoscapeDagre);
     container: cyContainer,
     elements: [],
     style: cytoscapeStyles,  // <-- USANDO OS ESTILOS IMPORTADOS
-    layout: { name: 'preset' }
+    layout: { name: 'preset' },
+    boxSelectionEnabled: true,
+    selectionType: 'add'
+  });
+
+  // === Multi-drag: mover vários nós selecionados ao mesmo tempo ===
+  let multiDragState = null;
+
+  cy.on('grab', 'node', (evt) => {
+    const grabbed = evt.target;
+    const selected = cy.nodes(':selected');
+    if (!grabbed.selected() || selected.length <= 1) return;
+
+    // armazenar posições iniciais
+    const initial = new Map();
+    selected.forEach(n => {
+      initial.set(n.id(), { x: n.position('x'), y: n.position('y') });
+    });
+
+    multiDragState = {
+      grabbedId: grabbed.id(),
+      startPos: { x: grabbed.position('x'), y: grabbed.position('y') },
+      initialPositions: initial
+    };
+  });
+
+  cy.on('position', 'node', (evt) => {
+    const node = evt.target;
+    if (!multiDragState) return;
+    if (node.id() !== multiDragState.grabbedId) return;
+
+    const dx = node.position('x') - multiDragState.startPos.x;
+    const dy = node.position('y') - multiDragState.startPos.y;
+
+    const selected = cy.nodes(':selected');
+    cy.batch(() => {
+      selected.forEach(n => {
+        if (n.id() === multiDragState.grabbedId) return;
+        const ip = multiDragState.initialPositions.get(n.id());
+        if (!ip) return;
+        n.position({ x: ip.x + dx, y: ip.y + dy });
+      });
+    });
+  });
+
+  cy.on('free', 'node', (evt) => {
+    const node = evt.target;
+    if (!multiDragState) return;
+    if (node.id() === multiDragState.grabbedId) {
+      multiDragState = null;
+    }
   });
   function getChildren(node) {
   return node.outgoers('node');
@@ -175,6 +225,238 @@ function toggleCollapse(node) {
       mostrarSpinner(false);
     }
   }
+
+  // === Auto-layout: testar vários algoritmos e escolher o melhor ===
+  function segmentIntersects(a1, a2, b1, b2) {
+    const det = (p, q) => p.x * q.y - p.y * q.x;
+    const sub = (p, q) => ({ x: p.x - q.x, y: p.y - q.y });
+    const r = sub(a2, a1);
+    const s = sub(b2, b1);
+    const denom = det(r, s);
+    if (denom === 0) return false; // paralelas
+    const u = det(sub(b1, a1), r) / denom;
+    const t = det(sub(b1, a1), s) / denom;
+    return t > 0 && t < 1 && u > 0 && u < 1;
+  }
+
+  function countEdgeCrossings() {
+    const edges = cy.edges().toArray();
+    let crossings = 0;
+    for (let i = 0; i < edges.length; i++) {
+      const e1 = edges[i];
+      const s1 = e1.source().position();
+      const t1 = e1.target().position();
+      for (let j = i + 1; j < edges.length; j++) {
+        const e2 = edges[j];
+        // ignorar se compartilham nó
+        if (e1.source().id() === e2.source().id() || e1.source().id() === e2.target().id() || e1.target().id() === e2.source().id() || e1.target().id() === e2.target().id()) continue;
+        const s2 = e2.source().position();
+        const t2 = e2.target().position();
+        if (segmentIntersects(s1, t1, s2, t2)) crossings++;
+      }
+    }
+    return crossings;
+  }
+
+  function averageEdgeLength() {
+    const edges = cy.edges();
+    if (edges.length === 0) return 0;
+    let sum = 0;
+    edges.forEach(e => {
+      const s = e.source().position();
+      const t = e.target().position();
+      const dx = s.x - t.x;
+      const dy = s.y - t.y;
+      sum += Math.sqrt(dx * dx + dy * dy);
+    });
+    return sum / edges.length;
+  }
+
+  function boundingBoxArea() {
+    const nodes = cy.nodes();
+    if (nodes.length === 0) return 0;
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    nodes.forEach(n => {
+      const p = n.position();
+      minX = Math.min(minX, p.x);
+      minY = Math.min(minY, p.y);
+      maxX = Math.max(maxX, p.x);
+      maxY = Math.max(maxY, p.y);
+    });
+    return (maxX - minX) * (maxY - minY);
+  }
+
+  async function evaluateLayout(name, options = {}) {
+    // restaurar posições iniciais antes de executar
+    const origPositions = new Map();
+    cy.nodes().forEach(n => origPositions.set(n.id(), { x: n.position('x'), y: n.position('y') }));
+
+    const layout = cy.layout(Object.assign({ name, animate: false, fit: false }, options));
+    layout.run();
+
+    // dar tempo para o layout aplicar (sincrono pois animate:false, mas garantir)
+    await new Promise(r => setTimeout(r, 10));
+
+    const crossings = countEdgeCrossings();
+    const avgLen = averageEdgeLength();
+    const area = boundingBoxArea();
+
+    // score menor é melhor. Peso crossings fortemente.
+    const score = crossings * 100000 + avgLen * 10 + area * 0.001;
+
+    // capturar posições para possível aplicação posterior
+    const positions = new Map();
+    cy.nodes().forEach(n => positions.set(n.id(), { x: n.position('x'), y: n.position('y') }));
+
+    // restaurar originais
+    cy.batch(() => {
+      cy.nodes().forEach(n => {
+        const p = origPositions.get(n.id());
+        if (p) n.position(p);
+      });
+    });
+
+    return { name, score, crossings, avgLen, area, positions };
+  }
+
+  async function findBestLayout() {
+    const controls = document.getElementById('controls');
+    mostrarSpinner(true);
+    try {
+      const candidates = [
+        { name: 'dagre', opts: { rankDir: 'LR', nodeSep: 40, rankSep: 200 } },
+        { name: 'cose', opts: { idealEdgeLength: 80, nodeOverlap: 10 } },
+        { name: 'breadthfirst', opts: { spacingFactor: 1.35 } },
+        { name: 'grid', opts: { spacingFactor: 1.3 } }
+      ];
+
+      const results = [];
+      for (const c of candidates) {
+        const res = await evaluateLayout(c.name, c.opts);
+        results.push(res);
+      }
+
+      results.sort((a, b) => a.score - b.score);
+      const best = results[0];
+
+      // aplicar posições do melhor
+      cy.batch(() => {
+        cy.nodes().forEach(n => {
+          const p = best.positions.get(n.id());
+          if (p) n.position(p);
+        });
+      });
+
+      cy.animate({ fit: { padding: 40 } }, { duration: 600 });
+
+      // mostrar um resumo leve no jsonView
+      jsonView.textContent = `Auto-layout aplicado: ${best.name} — cruzamentos:${best.crossings} avgLen:${best.avgLen.toFixed(1)} area:${Math.round(best.area)}`;
+      return best;
+    } finally {
+      mostrarSpinner(false);
+    }
+  }
+
+  // botão para disparar auto-layout
+  (function addAutoLayoutButton(){
+    const controls = document.getElementById('controls');
+    if (!controls) return;
+    const btn = document.createElement('button');
+    btn.id = 'btnAutoLayout';
+    btn.textContent = 'Auto-Organizar';
+    btn.style.padding = '6px 8px';
+    btn.style.borderRadius = '8px';
+    btn.style.marginLeft = '6px';
+    btn.addEventListener('click', () => { findBestLayout(); });
+    controls.appendChild(btn);
+  })();
+
+  // === Condensar/Prune por raio e modo compacto ===
+  function pruneByRadius(radius = 2, rootId) {
+    const root = rootId ? cy.getElementById(rootId) : cy.nodes()[0];
+    if (!root || root.length === 0) return;
+
+    // limpa quaisquer estados anteriores
+    cy.nodes().removeClass('hidden');
+    cy.edges().removeClass('hidden');
+
+    const depths = new Map();
+    cy.elements().bfs({ roots: root, visit: function(v, e, u, i, depth) { depths.set(v.id(), depth); } });
+
+    cy.batch(() => {
+      cy.nodes().forEach(n => {
+        const d = depths.has(n.id()) ? depths.get(n.id()) : Infinity;
+        if (d > radius) n.addClass('hidden');
+      });
+
+      cy.edges().forEach(e => {
+        const s = e.source();
+        const t = e.target();
+        if (s.hasClass('hidden') || t.hasClass('hidden')) e.addClass('hidden');
+      });
+    });
+  }
+
+  function showAllNodes() {
+    cy.batch(() => {
+      cy.nodes().removeClass('hidden');
+      cy.edges().removeClass('hidden');
+      cy.nodes().removeClass('matched');
+    });
+    const countEl = document.getElementById('searchCount');
+    if (countEl) countEl.textContent = '';
+  }
+
+  function toggleCompactView(enabled) {
+    cy.batch(() => {
+      if (enabled) cy.nodes().addClass('compact');
+      else cy.nodes().removeClass('compact');
+    });
+  }
+
+  (function addPruneControls(){
+    const controls = document.getElementById('controls');
+    if (!controls) return;
+
+    const wrapper = document.createElement('div');
+    wrapper.style.display = 'flex';
+    wrapper.style.alignItems = 'center';
+    wrapper.style.gap = '6px';
+    wrapper.style.marginLeft = '6px';
+
+    const slider = document.createElement('input');
+    slider.type = 'range';
+    slider.min = 1;
+    slider.max = 6;
+    slider.value = 2;
+    slider.style.width = '90px';
+    slider.id = 'pruneRadius';
+
+    const btnPrune = document.createElement('button');
+    btnPrune.textContent = 'Condensar';
+    btnPrune.style.padding = '6px 8px';
+    btnPrune.style.borderRadius = '8px';
+    btnPrune.addEventListener('click', () => pruneByRadius(Number(slider.value)));
+
+    const btnRestore = document.createElement('button');
+    btnRestore.textContent = 'Restaurar';
+    btnRestore.style.padding = '6px 8px';
+    btnRestore.style.borderRadius = '8px';
+    btnRestore.addEventListener('click', showAllNodes);
+
+    const chkCompact = document.createElement('button');
+    chkCompact.textContent = 'Compacto';
+    chkCompact.style.padding = '6px 8px';
+    chkCompact.style.borderRadius = '8px';
+    let compactOn = false;
+    chkCompact.addEventListener('click', () => { compactOn = !compactOn; toggleCompactView(compactOn); chkCompact.style.opacity = compactOn ? '0.9' : '1'; });
+
+    wrapper.appendChild(slider);
+    wrapper.appendChild(btnPrune);
+    wrapper.appendChild(btnRestore);
+    wrapper.appendChild(chkCompact);
+    controls.appendChild(wrapper);
+  })();
 
   // === Carregar grafo a partir da API ===
   async function loadGraph() {
@@ -371,8 +653,8 @@ function toggleCollapse(node) {
   const btnToggleJson = document.createElement('button');
   btnToggleJson.textContent = '📄 Ocultar JSON';
   btnToggleJson.style.position = 'absolute';
-  btnToggleJson.style.top = '50px';
-  btnToggleJson.style.left = '10px';
+  btnToggleJson.style.top = '60px';
+  btnToggleJson.style.left = '21px';
   btnToggleJson.style.zIndex = 1000;
   btnToggleJson.style.padding = '8px 14px';
   btnToggleJson.style.border = 'none';
@@ -392,6 +674,7 @@ function toggleCollapse(node) {
     jsonView.style.display = jsonVisible ? 'block' : 'none';
     btnToggleJson.textContent = jsonVisible ? '📄 Ocultar JSON' : '📄 Mostrar JSON';
   });
+  
 
   cyContainer.parentNode.appendChild(btnToggleJson);
 })();
